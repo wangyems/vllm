@@ -91,7 +91,7 @@ void PagedAttentionOpCompute(
     if (dprops->major >= 8 && dprops->minor >= 0) {
       mha_varlen_fwd(query_view, key_view, value_view, optional_output_torch,
                      seqstart_q_torch, seqstart_k_torch,
-                     // none,
+                     none,
                      max_seqlen_q, max_seqlen_k,
                      0.0f, attn_param_.scale_, false, true, -1,
                      -1, false, c10::nullopt);
