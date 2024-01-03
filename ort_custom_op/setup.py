@@ -36,6 +36,7 @@ def creat_ort_extensions():
               str(CurPath)+'/etra_ort_headers',
               str(CurPath)+'/../csrc',
               download_onnxruntime_headers(),
+              cpp_extension.CUDA_HOME+"/include",
               #"/usr/local/cuda-11.7/targets/x86_64-linux/include"
             ],
           extra_compile_args={"cxx": ["-O3", "-std=c++17"]}
