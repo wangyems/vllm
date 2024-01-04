@@ -62,8 +62,8 @@ def export_onnx(tensor_parallel_size, rank):
     onnx_out_names = ("last_hidden_state",)
     for layer_idx in range(model.config.num_hidden_layers):
         onnx_out_names = onnx_out_names + \
-            (f"past_key_values.key.{layer_idx}",
-             f"past_key_values.value.{layer_idx}")
+            (f"present.key.{layer_idx}",
+             f"present.value.{layer_idx}")
     torch.onnx.export(model=model, args=tuple(onnx_pt_inputs), f=str(tmp_onnx), verbose=False, opset_version=17,
                       input_names=tuple(onnx_inp_names), output_names=tuple(onnx_out_names),
                       dynamic_axes={"input_ids": {
@@ -88,12 +88,12 @@ def export_onnx(tensor_parallel_size, rank):
     onnx_inp_names = ("input_ids", "seqlens_k")
     for layer_idx in range(model.config.num_hidden_layers):
         onnx_inp_names = onnx_inp_names + \
-            (f"present.key.{layer_idx}", f"present.value.{layer_idx}")
+            (f"past.key.{layer_idx}", f"past.value.{layer_idx}")
     dynamic_axes = {"input_ids": {0: "batch_size", 1: "seq_len"}, "seqlens_k": {0: "batch_size"}}
     for layer_idx in range(model.config.num_hidden_layers):
-        dynamic_axes[f"present.key.{layer_idx}"] = {
+        dynamic_axes[f"past.key.{layer_idx}"] = {
             0: "batch_size", 2: "seq_len", 1: "num_heads", 3: "head_dim"}
-        dynamic_axes[f"present.value.{layer_idx}"] = {
+        dynamic_axes[f"past.value.{layer_idx}"] = {
             0: "batch_size", 2: "seq_len", 1: "num_heads", 3: "head_dim"}
     torch.onnx.export(model=model, args=tuple(onnx_pt_inputs), f=str(tmp_onnx), verbose=False, opset_version=17,
                       input_names=tuple(onnx_inp_names), output_names=tuple(onnx_out_names),
@@ -118,8 +118,8 @@ def infer_model(tensor_parallel_size, rank, model_or_sess):
         onnx_inputs = {"input_ids": inputs.input_ids.cpu().numpy()}
         ortout = model_or_sess.run(None, onnx_inputs)
         out = torch.from_numpy(ortout[0]).cuda()
-        onnx_model_path = Path(f"./onnx_models/mixtral_with_past_rank{rank}.onnx").absolute()
-        #onnx_model_path = Path(f"/home/jicwen/work/vllm/mixtral_infer/onnx_models//mixtral_with_past_rank{rank}.onnx").absolute()
+        #onnx_model_path = Path(f"./onnx_models/mixtral_with_past_rank{rank}.onnx").absolute()
+        onnx_model_path = Path(f"/home/jicwen/work/vllm/mixtral_infer/onnx_models//mixtral_with_past_rank{rank}.onnx").absolute()
         import onnxruntime
         from vllm import paged_attn
         session_options = onnxruntime.SessionOptions()
@@ -172,10 +172,10 @@ def test_model_load(tensor_parallel_size, rank, test_torch=True):
         session_options = onnxruntime.SessionOptions()
         session_options.register_custom_ops_library(paged_attn.__file__)
         provider_opt = {"device_id": rank, }
+        #onnx_model_path = Path(
+        #    f"./onnx_models/mixtral_rank{rank}.onnx").absolute()
         onnx_model_path = Path(
-            f"./onnx_models/mixtral_rank{rank}.onnx").absolute()
-        # onnx_model_path = Path(
-        #     f"/home/jicwen/work/vllm/mixtral_infer/onnx_models/mixtral_rank{rank}.onnx").absolute()
+            f"/home/jicwen/work/vllm/mixtral_infer/onnx_models/mixtral_rank{rank}.onnx").absolute()
         sess = onnxruntime.InferenceSession(str(onnx_model_path), providers=[(
             "CUDAExecutionProvider", provider_opt)], sess_options=session_options)
 
@@ -183,9 +183,9 @@ def test_model_load(tensor_parallel_size, rank, test_torch=True):
 
 
 def process_entry(tensor_parallel_size, rank):
-    export_onnx(tensor_parallel_size, rank)
+    #export_onnx(tensor_parallel_size, rank)
     #test_model_load(tensor_parallel_size, rank, test_torch=True)
-    #test_model_load(tensor_parallel_size, rank, test_torch=False)
+    test_model_load(tensor_parallel_size, rank, test_torch=False)
 
 
 if __name__ == "__main__":
