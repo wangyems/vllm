@@ -327,6 +327,111 @@ def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
 
 # Copied from transformers.models.mistral.modeling_mistral.MistralAttention with Mistral->Mixtral
 
+# use when cache is not None
+class GQAForOnnxExport(torch.autograd.Function):
+    @staticmethod
+    def forward(
+        ctx,
+        query_states,
+        key_states,
+        value_states,
+        past_key,
+        past_value,
+        attention_mask,
+        seqlens_k,
+        total_seq_len,
+        num_heads,
+        head_dim,
+        num_key_value_heads,
+        num_key_value_groups,
+    ):
+        bsz, seq_len, hidden_size = query_states.size()
+
+        query_states = query_states.view(
+            bsz, -1, num_heads, head_dim).transpose(1, 2)
+        key_states = key_states.view(
+            bsz, -1, num_key_value_heads, head_dim).transpose(1, 2)
+        value_states = value_states.view(
+            bsz, -1, num_key_value_heads, head_dim).transpose(1, 2)
+
+        kv_seq_len = key_states.shape[-2]
+
+        key_cache, value_cache = past_key, past_value
+
+        kv_seq_len += key_cache.shape[-2]
+
+        key_states = torch.cat([key_cache, key_states], dim=-2)
+        value_states = torch.cat([value_cache, value_states], dim=-2)
+
+        # repeat k/v heads if n_kv_heads < n_heads
+        key_states = repeat_kv(key_states, num_key_value_groups)
+        value_states = repeat_kv(value_states, num_key_value_groups)
+
+        attn_weights = torch.matmul(
+            query_states, key_states.transpose(2, 3)) / math.sqrt(head_dim)
+
+        if attention_mask is not None:
+            attn_weights = attn_weights + attention_mask
+
+        # upcast attention to fp32[]
+        attn_weights = nn.functional.softmax(
+            attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
+
+        attn_output = torch.matmul(attn_weights, value_states)
+
+        attn_output = attn_output.transpose(1, 2).contiguous()
+        attn_output = attn_output.reshape(bsz, -1, hidden_size)
+
+        return attn_output, key_states, value_states
+
+
+    @staticmethod
+    def symbolic(g: torch.Graph,
+                 query_states,
+                 key_states,
+                 value_states,
+                 past_key,
+                 past_value,
+                 attention_mask,
+                 seqlens_k,
+                 total_seq_len,
+                 num_heads,
+                 head_dim,
+                 num_key_value_heads,
+                 num_key_value_groups):
+        if get_tensor_model_parallel_world_size() > 1:
+            outputs = g.op("com.microsoft::GroupQueryAttention",
+                            query_states,
+                            key_states,
+                            value_states,
+                            past_key,
+                            past_value,
+                            seqlens_k,
+                            torch.tensor(total_seq_len, dtype=torch.int32),
+                            num_heads_i=num_heads,
+                            kv_num_heads_i=num_key_value_heads,
+                            scale_f=0.08838834764,
+                            outputs=3)
+        else:
+            outputs = g.op("com.microsoft::GroupQueryAttention",
+                            query_states,
+                            key_states,
+                            value_states,
+                            past_key,
+                            past_value,
+                            seqlens_k,
+                            torch.tensor(total_seq_len, dtype=torch.int32),
+                            num_heads_i=num_heads,
+                            kv_num_heads_i=num_key_value_heads,
+                            scale_f=0.08838834764,
+                            outputs=3)
+        attn_output, present_key, present_value = outputs[0], outputs[1], outputs[2]
+        attn_output.setType(query_states.type())
+        present_key.setType(past_key.type())
+        present_value.setType(past_value.type())
+
+        return attn_output, present_key, present_value
+
 
 class MixtralNotPagedAttn(nn.Module):
     """
@@ -358,8 +463,29 @@ class MixtralNotPagedAttn(nn.Module):
         key_states: torch.Tensor,
         value_states: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
+        seqlens_k: Optional[torch.Tensor] = None,
         past_key_value=None,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
+        if past_key_value is not None and torch.onnx.is_in_onnx_export():
+            key_cache, value_cache = past_key_value
+            kv_seq_len = key_states.shape[-2]
+            kv_seq_len += key_cache.shape[-2]
+            attn_output, present_key, present_value = GQAForOnnxExport.apply(
+                query_states,
+                key_states,
+                value_states,
+                key_cache,
+                value_cache,
+                attention_mask,
+                seqlens_k,
+                kv_seq_len,
+                self.num_heads,
+                self.head_dim,
+                self.num_key_value_heads,
+                self.num_key_value_groups,
+            )
+            return attn_output, (present_key, present_value)
+
         bsz, seq_len, hidden_size = query_states.size()
 
         query_states = query_states.view(
@@ -372,6 +498,9 @@ class MixtralNotPagedAttn(nn.Module):
         kv_seq_len = key_states.shape[-2]
         if past_key_value is not None:
             key_cache, value_cache = past_key_value
+            # print("key_cache", key_cache.shape)
+            # print("value_cache", value_cache.shape)
+
             kv_seq_len += key_cache.shape[-2]
 
             key_states = torch.cat([key_cache, key_states], dim=-2)
@@ -464,6 +593,7 @@ class MixtralAttention(nn.Module):
         self,
         positions: torch.Tensor,
         attention_mask,
+        seqlens_k,
         hidden_states: torch.Tensor,
         kv_cache,
     ) -> torch.Tensor:
@@ -472,7 +602,7 @@ class MixtralAttention(nn.Module):
         q, k = self.rotary_emb(positions, q, k)
 
         # k_cache, v_cache = kv_cache
-        attn_output, kv_cache = self.attn(q, k, v, attention_mask, kv_cache)
+        attn_output, kv_cache = self.attn(q, k, v, attention_mask, seqlens_k, kv_cache)
         output, _ = self.o_proj(attn_output)
         return output, kv_cache
 
@@ -510,6 +640,7 @@ class MixtralDecoderLayer(nn.Module):
         self,
         positions: torch.Tensor,
         attention_mask: torch.Tensor,
+        seqlens_k: torch.Tensor,
         hidden_states: torch.Tensor,
         kv_cache,
         residual: Optional[torch.Tensor],
@@ -524,6 +655,7 @@ class MixtralDecoderLayer(nn.Module):
         hidden_states, kv_cache = self.self_attn(
             positions=positions,
             attention_mask=attention_mask,
+            seqlens_k=seqlens_k,
             hidden_states=hidden_states,
             kv_cache=kv_cache,
         )
@@ -560,6 +692,7 @@ class MixtralModel(nn.Module):
     def forward(
         self,
         input_ids: torch.Tensor,
+        seqlens_k: torch.Tensor,
         positions: torch.Tensor,
         kv_caches,
     ):
@@ -588,7 +721,7 @@ class MixtralModel(nn.Module):
         kv_caches_list = [None] * len(self.layers)
         for i in range(len(self.layers)):
             layer = self.layers[i]
-            hidden_states, residual, kv_caches_list[i] = layer(positions, attention_mask, hidden_states,
+            hidden_states, residual, kv_caches_list[i] = layer(positions, attention_mask, seqlens_k, hidden_states,
                                                                kv_caches[i] if kv_caches is not None else None,
                                                                residual)
         hidden_states, _ = self.norm(hidden_states, residual)
@@ -613,10 +746,11 @@ class MixtralForCausalLM(nn.Module):
         self,
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor = None,
+        seqlens_k: torch.Tensor = None,
         positions: torch.Tensor = None,
         kv_caches: List[Tuple[torch.Tensor, torch.Tensor]] = None,
     ) -> torch.Tensor:
-        hidden_states, kv_caches = self.model(input_ids, positions, kv_caches)
+        hidden_states, kv_caches = self.model(input_ids, seqlens_k, positions, kv_caches)
         logits = torch.matmul(hidden_states, self.lm_head.weight.t())
         logits = tensor_model_parallel_all_gather(logits)
         return logits, kv_caches
