@@ -137,7 +137,7 @@ def infer_model(tensor_parallel_size, rank, model_or_sess):
         out, past_key_value = model_or_sess(**inputs)
     gen_ids = []
     while len(gen_ids) < 100:
-        seqlens_k = len(gen_ids) + 1
+        seqlens_k = len(gen_ids) + seq_len
         next_id = out[:, -1, :].argmax(dim=-1, keepdim=True)
         gen_ids.append(next_id)
         if isinstance(model_or_sess, nn.Module):
