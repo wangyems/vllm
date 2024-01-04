@@ -399,6 +399,9 @@ class GQAForOnnxExport(torch.autograd.Function):
                  head_dim,
                  num_key_value_heads,
                  num_key_value_groups):
+        import torch._C._onnx as _C_onnx
+        total_sequence_length = g.op("Cast", total_seq_len, to_i=_C_onnx.TensorProtoDataType.INT32)
+        sequence_lengths_k = g.op("Cast", seqlens_k, to_i=_C_onnx.TensorProtoDataType.INT32)
         if get_tensor_model_parallel_world_size() > 1:
             outputs = g.op("com.microsoft::GroupQueryAttention",
                             query_states,
@@ -406,9 +409,8 @@ class GQAForOnnxExport(torch.autograd.Function):
                             value_states,
                             past_key,
                             past_value,
-                            seqlens_k,
-                            total_seq_len,
-                            #torch.tensor(total_seq_len, dtype=torch.int32),
+                            sequence_lengths_k,
+                            total_sequence_length,
                             num_heads_i=num_heads,
                             kv_num_heads_i=num_key_value_heads,
                             scale_f=0.08838834764,
@@ -420,9 +422,8 @@ class GQAForOnnxExport(torch.autograd.Function):
                             value_states,
                             past_key,
                             past_value,
-                            seqlens_k,
-                            total_seq_len,
-                            #torch.tensor(total_seq_len, dtype=torch.int32),
+                            sequence_lengths_k,
+                            total_sequence_length,
                             num_heads_i=num_heads,
                             kv_num_heads_i=num_key_value_heads,
                             scale_f=0.08838834764,
