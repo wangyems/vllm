@@ -16,7 +16,7 @@ torch.zeros(1).cuda()
 
 torch.manual_seed(0)
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "2,3,4,5"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3"
 
 input_ids_name = "input_ids"
 sequence_length_name = "seqlens_k"
@@ -48,7 +48,7 @@ def init_test_distributed_environment(tensor_parallel_size: int, rank: int,
     torch.cuda.set_device(rank)
     _init_distributed_environment(
         parallel_config, rank, distributed_init_method)
-    
+
 def get_initial_inputs_and_outputs_for_bench(batch_size, sequence_length, tensor_parallel_size, device: torch.device, use_fp16: bool, use_buffer_share: bool):
     torch_dtype = torch.float16 if use_fp16 else torch.float32
 
@@ -150,9 +150,9 @@ def infer_model(tensor_parallel_size, rank, model_or_sess):
     use_buffer_share = False # buffer sharing is not supported now
     eos_token_id = 50256 # never let it reach eos for benchmark
     torch_dtype = torch.float16 if use_fp16 else torch.float32
-    for token_num in [128]:
-        for batch_size in [1]:
-            for seq_len in [512, 1024, 2048]:
+    for token_num in [2048]:
+        for batch_size in [2]:
+            for seq_len in [1024, 1024, 1024, 1024, 2048, 2048, 2048, 2048, 4096, 4096, 4096, 4096]:
                 max_length = seq_len + token_num
                 if rank == 0:
                     print("batch size:", batch_size, "seq len:", seq_len, "token_num:", token_num)
@@ -173,11 +173,11 @@ def infer_model(tensor_parallel_size, rank, model_or_sess):
                         prompt_fence = time.time()
 
                     io_binding = apply_io_binding(model_or_sess, inputs, outputs, use_fp16, use_buffer_share)
-           
+
                     io_binding.synchronize_inputs()
                     model_or_sess.run_with_iobinding(io_binding)
                     io_binding.synchronize_outputs()
- 
+
                     # Sample with argmax (greedy search)
                     next_token_logits = outputs[logits_name][:, -1, :]
                     next_tokens = torch.argmax(next_token_logits, dim=-1)
@@ -199,7 +199,7 @@ def infer_model(tensor_parallel_size, rank, model_or_sess):
 
                     # Update inputs for next inference run
                     inputs[input_ids_name] = tokens_to_add.to(torch.int64)
-                    inputs[sequence_length_name] = torch.ones(batch_size, device=device, dtype=torch.int64) * (current_length + 1)
+                    inputs[sequence_length_name] = torch.ones(batch_size, device=device, dtype=torch.int64) * (current_length)
                     current_length += 1
                     count += 1
 
